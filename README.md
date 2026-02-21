@@ -1,3 +1,7 @@
+🇺🇸 English | [🇰🇷 한국어](README.ko.md)
+
+---
+
 # Claude Code Agent Teams on Windows — psmux Split Panes
 
 > **World's first native Windows solution** for running Claude Code agent teams
