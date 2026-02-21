@@ -1,0 +1,76 @@
+#!/bin/bash
+# =============================================================================
+# tmux compatibility shim for psmux
+# Enables Claude Code agent team split-pane mode on native Windows via psmux
+#
+# Usage: place this file in your PATH BEFORE psmux's tmux.exe
+#        (rename psmux's tmux.exe → tmux-psmux.exe first)
+#
+# Fixes:
+#   1. tmux -V  → psmux launches TUI instead of printing version (hangs Claude Code)
+#   2. display-message format vars → return empty inside psmux panes
+#
+# Install:
+#   cp scripts/tmux  ~/.cargo/bin/tmux         # for Git Bash / MSYS2
+#   cp scripts/tmux.cmd ~/.cargo/bin/tmux.cmd  # for PowerShell / CMD
+# =============================================================================
+
+PSMUX_SESSION="${PSMUX_SESSION_NAME:-default}"
+
+case "$1" in
+  -V)
+    # Claude Code checks tmux version on startup.
+    # psmux does not support -V and launches interactive TUI instead.
+    echo "tmux 3.4"
+    exit 0
+    ;;
+
+  display-message)
+    # Claude Code calls: tmux display-message -p '#{format_var}'
+    # Inside a detached psmux pane, these return empty. We intercept and return
+    # correct values using psmux commands or environment variables.
+    FORMAT=""
+    NEXT_IS_FORMAT=0
+    for arg in "$@"; do
+      if [ "$NEXT_IS_FORMAT" = "1" ]; then
+        FORMAT="$arg"
+        NEXT_IS_FORMAT=0
+      fi
+      if [ "$arg" = "-p" ]; then
+        NEXT_IS_FORMAT=1
+      fi
+    done
+
+    case "$FORMAT" in
+      *window_panes*)
+        COUNT=$(psmux list-panes -t "$PSMUX_SESSION" 2>/dev/null | wc -l | tr -d ' ')
+        echo "${COUNT:-1}"
+        exit 0
+        ;;
+      *pane_id*)
+        echo "${TMUX_PANE:-%1}"
+        exit 0
+        ;;
+      *session_name*)
+        echo "$PSMUX_SESSION"
+        exit 0
+        ;;
+      *window_id*)
+        echo "@1"
+        exit 0
+        ;;
+      *window_index*)
+        echo "1"
+        exit 0
+        ;;
+    esac
+
+    # Unknown format variable → pass through to psmux
+    exec psmux "$@"
+    ;;
+
+  *)
+    # All other tmux commands pass through directly to psmux
+    exec psmux "$@"
+    ;;
+esac
