@@ -24,16 +24,19 @@ requiring syncing files between Windows and the Linux subsystem.
 that runs without WSL.
 
 ```
-psmux session
-┌─────────────────────────┬──────────────────────────────┐
-│ Pane 1  @alpha (Lead)   │ Pane 2  @bravo (Teammate 1) │
-│ Claude Code v2.1.50     │ Claude Code v2.1.50          │
-│ Opus 4.6                │ Opus 4.6                     │
-├─────────────────────────┴──────────────────────────────┤
-│ Pane 3  @bravo (Teammate 2)                            │
-│ Claude Code v2.1.50                                    │
-└────────────────────────────────────────────────────────┘
+psmux session (current behavior)
+┌──────────────────────────┬───────────────────────────────┐
+│ Pane 1  Lead             │ Pane 2  Teammates (cycling)   │
+│ Claude Code v2.1.50      │ @alpha → completes            │
+│ Opus 4.6 · orchestrating │ @beta  → completes            │
+│                          │ @gamma → completes            │
+└──────────────────────────┴───────────────────────────────┘
+ shift-tab to cycle between active teammates
 ```
+
+> **Note**: Claude Code currently creates one shared pane for all teammates
+> (they run sequentially). Per-teammate panes (as on macOS) require a Claude
+> Code update. See [docs/issues-and-improvements.md](docs/issues-and-improvements.md).
 
 ## Prior Art
 
@@ -109,13 +112,15 @@ Or use the launch script:
 
 ## Why It Doesn't Work Out of the Box
 
-Claude Code and psmux have 3 incompatibilities. See [docs/how-it-works.md](docs/how-it-works.md)
-for the full technical explanation. In short:
+Claude Code and psmux have several incompatibilities. See [docs/issues-and-improvements.md](docs/issues-and-improvements.md)
+for the full technical details. In short:
 
 | Issue | Symptom | Fix |
 |-------|---------|-----|
 | `tmux -V` launches psmux TUI | Claude Code hangs on startup | Shim returns `"tmux 3.4"` |
 | Format vars return empty in panes | Teammate spawn fails with "Could not determine pane count" | Shim intercepts and returns correct values |
+| Bare pane ID in `send-keys -t %N` | `no server running on session ''` | Shim rewrites to `-t default:%N` |
+| `%*` re-expansion in CMD batch | psmux receives `-t split-window` (invalid) and crashes TUI | Shim uses positional args `%~3` + `default:` prefix |
 | Session name must be `default` | `psmux list-panes` fails inside pane | Always name your session `default` |
 
 ## Contributing

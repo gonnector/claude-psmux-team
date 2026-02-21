@@ -16,6 +16,10 @@
 # =============================================================================
 
 PSMUX_SESSION="${PSMUX_SESSION_NAME:-default}"
+LOGFILE="/tmp/psmux-shim.log"
+
+# Log every call to the shim for debugging
+echo "$(date '+%H:%M:%S.%3N') SHIM: $*" >> "$LOGFILE"
 
 case "$1" in
   -V)
@@ -67,6 +71,40 @@ case "$1" in
 
     # Unknown format variable → pass through to psmux
     exec psmux "$@"
+    ;;
+
+  send-keys | kill-pane)
+    # psmux cannot resolve pane IDs (%N) to their session without $TMUX context.
+    # When Claude Code calls: send-keys -t %2 "cmd" Enter
+    # psmux looks up session for pane %2, gets '' (empty) → fails.
+    # Fix: rewrite -t %N  →  -t default:%N  (explicit session prefix)
+    NEWARGS=("$1"); shift
+    PREV=""
+    for arg in "$@"; do
+      if [ "$PREV" = "-t" ] && [[ "$arg" =~ ^%[0-9] ]]; then
+        NEWARGS+=("${PSMUX_SESSION}:${arg}")
+      else
+        NEWARGS+=("$arg")
+      fi
+      PREV="$arg"
+    done
+    echo "$(date '+%H:%M:%S.%3N') ${NEWARGS[0]} rewritten: ${NEWARGS[*]}" >> "$LOGFILE"
+    exec psmux "${NEWARGS[@]}"
+    ;;
+
+  split-window)
+    # Serialize split-window calls via lock file to prevent psmux TUI crash.
+    # When Claude Code spawns multiple teammates rapidly, concurrent IPC calls
+    # cause psmux to panic. A lock + delay serializes them.
+    LOCK_FILE="/tmp/psmux-split.lock"
+    (
+      flock -x 200
+      sleep 1.0
+      echo "$(date '+%H:%M:%S.%3N') SPLIT START: $*" >> "$LOGFILE"
+      # stderr to log only — stdout must reach Claude Code (pane ID output)
+      psmux "$@" 2>> "$LOGFILE"
+      echo "$(date '+%H:%M:%S.%3N') SPLIT DONE: exit=$?" >> "$LOGFILE"
+    ) 200>"$LOCK_FILE"
     ;;
 
   *)
