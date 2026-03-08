@@ -8,8 +8,8 @@
 > in split terminal panes — without WSL, without Cygwin, without any Linux subsystem.
 
 ![Windows](https://img.shields.io/badge/Windows-11-blue?logo=windows)
-![psmux](https://img.shields.io/badge/psmux-v0.3.9-orange)
-![Claude Code](https://img.shields.io/badge/Claude_Code-v2.1.50-blueviolet)
+![psmux](https://img.shields.io/badge/psmux-v0.4.10-orange)
+![Claude Code](https://img.shields.io/badge/Claude_Code-v2.1.71-blueviolet)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
 ## What This Does
@@ -54,36 +54,48 @@ This project eliminates that overhead entirely.
 - Windows 10/11
 - [Rust / Cargo](https://rustup.rs/) (to install psmux)
 - [Claude Code](https://code.claude.com/) v2.1.40+
-- Git Bash or MSYS2 (for the bash shim)
 - `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` enabled
 
-## Quick Install
+## Install
+
+### 1. Install psmux
 
 ```powershell
-# 1. Install psmux
-cargo install psmux
+cargo install psmux   # v0.4.10+ required
+```
 
-# 2. Clone this repo
-git clone https://github.com/YOUR_USERNAME/claude-psmux-team
+### 2. Install the version-spoof shim
+
+psmux v0.4.10 handles all tmux commands natively, but `tmux -V` returns
+`"tmux 0.4.10"` — Claude Code requires version 2+ and silently falls back
+to in-process mode. Additionally, Node.js `spawn` only finds `.exe` files
+on Windows, so a compiled shim is required.
+
+```powershell
+git clone https://github.com/gonnector/claude-psmux-team
 cd claude-psmux-team
 
-# 3. Run the installer
-.\scripts\install.ps1
+# Rename psmux's tmux binary (name must start with "tmux" for tmux mode)
+Rename-Item "$env:USERPROFILE\.cargo\bin\tmux.exe" "tmux-real.exe"
+
+# Option A: Compile the shim (requires gcc / MSYS2)
+gcc -O2 -o "$env:USERPROFILE\.cargo\bin\tmux.exe" scripts/tmux-shim.c
+
+# Option B: Use pre-built shim (if gcc is not available)
+Copy-Item scripts/tmux.exe "$env:USERPROFILE\.cargo\bin\tmux.exe"
 ```
 
-## Manual Install
+The shim intercepts `tmux -V` → returns `"tmux 3.4"`, passes everything
+else to `tmux-real.exe` (psmux in tmux-compatible mode).
 
-```powershell
-# 1. Install psmux
-cargo install psmux
+<details>
+<summary><strong>Using psmux v0.3.x?</strong> (legacy full shim required)</summary>
 
-# 2. Backup psmux's tmux alias
-Rename-Item "$env:USERPROFILE\.cargo\bin\tmux.exe" "tmux-psmux.exe"
+psmux v0.3.x does not handle `tmux -V`, `display-message` format variables,
+or bare pane IDs in `send-keys`. You need the full compatibility shim
+(not just version spoof). See [docs/shim-v0.3.x.md](docs/shim-v0.3.x.md).
 
-# 3. Copy shim scripts
-Copy-Item scripts\tmux     "$env:USERPROFILE\.cargo\bin\tmux"      # Git Bash
-Copy-Item scripts\tmux.cmd "$env:USERPROFILE\.cargo\bin\tmux.cmd"  # PowerShell
-```
+</details>
 
 ## Enable Agent Teams
 
@@ -109,36 +121,28 @@ claude --teammate-mode tmux
 # "Spawn 2 teammates to research X and Y in parallel"
 ```
 
-Or use the launch script:
-```powershell
-.\scripts\launch.ps1
-```
+## Compatibility Matrix
 
-## Why It Doesn't Work Out of the Box
+| Feature | psmux v0.3.9 | psmux v0.4.10+ |
+|---------|:---:|:---:|
+| `tmux -V` version output | Shim required | Native |
+| `display-message` format vars | Shim required | Native |
+| `send-keys -t %N` (bare pane ID) | Shim required | Native |
+| `split-window -P -F #{pane_id}` | Shim required | Native |
+| `kill-pane -t %N` | Shim required | Native |
+| Per-teammate panes | Not supported | Not supported* |
 
-Claude Code and psmux have several incompatibilities. See [docs/issues-and-improvements.md](docs/issues-and-improvements.md)
-for the full technical details. In short:
-
-| Issue | Symptom | Fix |
-|-------|---------|-----|
-| `tmux -V` launches psmux TUI | Claude Code hangs on startup | Shim returns `"tmux 3.4"` |
-| Format vars return empty in panes | Teammate spawn fails with "Could not determine pane count" | Shim intercepts and returns correct values |
-| Bare pane ID in `send-keys -t %N` | `no server running on session ''` | Shim rewrites to `-t default:%N` |
-| `%*` re-expansion in CMD batch | psmux receives `-t split-window` (invalid) and crashes TUI | Shim uses positional args `%~3` + `default:` prefix |
-| Session name must be `default` | `psmux list-panes` fails inside pane | Always name your session `default` |
+*\*Claude Code creates 1 split for all teammates. This is a Claude Code behavior, not a psmux limitation.*
 
 ## Contributing
 
 Issues and PRs welcome! See [docs/issues-and-improvements.md](docs/issues-and-improvements.md)
-for the full list of known issues and suggested improvements for:
-- psmux
-- Claude Code
-- This shim
+for the full list of known issues and suggested improvements for psmux, Claude Code, and this project.
 
 ## Related Issues
 
 - [anthropics/claude-code#24384](https://github.com/anthropics/claude-code/issues/24384) — Add Windows Terminal as split-pane backend
-- [marlocarlo/psmux](https://github.com/marlocarlo/psmux) — psmux project
+- [marlocarlo/psmux#42](https://github.com/marlocarlo/psmux/issues/42) — tmux compatibility issues (resolved in v0.4.10)
 
 ## License
 

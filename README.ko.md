@@ -8,8 +8,8 @@
 > 분할 터미널 창에서 Claude Code 에이전트 팀을 실행합니다.
 
 ![Windows](https://img.shields.io/badge/Windows-11-blue?logo=windows)
-![psmux](https://img.shields.io/badge/psmux-v0.3.9-orange)
-![Claude Code](https://img.shields.io/badge/Claude_Code-v2.1.50-blueviolet)
+![psmux](https://img.shields.io/badge/psmux-v0.4.10-orange)
+![Claude Code](https://img.shields.io/badge/Claude_Code-v2.1.71-blueviolet)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
 ## 개요
@@ -52,36 +52,47 @@ psmux 세션 (현재 동작)
 - Windows 10/11
 - [Rust / Cargo](https://rustup.rs/) (psmux 설치용)
 - [Claude Code](https://code.claude.com/) v2.1.40 이상
-- Git Bash 또는 MSYS2 (bash shim용)
 - `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` 활성화
 
-## 빠른 설치
+## 설치
+
+### 1. psmux 설치
 
 ```powershell
-# 1. psmux 설치
-cargo install psmux
+cargo install psmux   # v0.4.10 이상 필요
+```
 
-# 2. 저장소 클론
+### 2. 버전 스푸핑 shim 설치
+
+psmux v0.4.10은 모든 tmux 명령을 네이티브로 처리하지만, `tmux -V`가
+`"tmux 0.4.10"`을 반환합니다. Claude Code는 버전 2 이상을 요구하며,
+미달 시 in-process 모드로 자동 전환됩니다. 또한 Node.js `spawn`은 Windows에서
+`.exe` 파일만 찾으므로 컴파일된 shim이 필요합니다.
+
+```powershell
 git clone https://github.com/gonnector/claude-psmux-team
 cd claude-psmux-team
 
-# 3. 설치 스크립트 실행
-.\scripts\install.ps1
+# psmux의 tmux 바이너리 이름 변경 (tmux 모드 유지를 위해 "tmux"로 시작해야 함)
+Rename-Item "$env:USERPROFILE\.cargo\bin\tmux.exe" "tmux-real.exe"
+
+# 방법 A: shim 직접 컴파일 (gcc / MSYS2 필요)
+gcc -O2 -o "$env:USERPROFILE\.cargo\bin\tmux.exe" scripts/tmux-shim.c
+
+# 방법 B: 사전 빌드된 shim 사용 (gcc가 없는 경우)
+Copy-Item scripts/tmux.exe "$env:USERPROFILE\.cargo\bin\tmux.exe"
 ```
 
-## 수동 설치
+shim은 `tmux -V` → `"tmux 3.4"` 반환, 나머지는 `tmux-real.exe`(psmux tmux 호환 모드)로 전달합니다.
 
-```powershell
-# 1. psmux 설치
-cargo install psmux
+<details>
+<summary><strong>psmux v0.3.x를 사용 중이라면?</strong> (레거시 전체 shim 필요)</summary>
 
-# 2. psmux의 tmux 별칭 백업
-Rename-Item "$env:USERPROFILE\.cargo\bin\tmux.exe" "tmux-psmux.exe"
+psmux v0.3.x는 `tmux -V`, `display-message` 포맷 변수, `send-keys`의 bare pane ID를
+처리하지 못합니다. 버전 스푸핑만이 아닌 전체 호환성 shim이 필요합니다.
+[docs/shim-v0.3.x.md](docs/shim-v0.3.x.md) 참고.
 
-# 3. shim 스크립트 복사
-Copy-Item scripts\tmux     "$env:USERPROFILE\.cargo\bin\tmux"      # Git Bash용
-Copy-Item scripts\tmux.cmd "$env:USERPROFILE\.cargo\bin\tmux.cmd"  # PowerShell용
-```
+</details>
 
 ## 에이전트 팀 활성화
 
@@ -107,35 +118,29 @@ claude --teammate-mode tmux
 # "3명의 팀원을 병렬로 구성해서 X, Y, Z를 각각 조사해줘"
 ```
 
-또는 실행 스크립트 사용:
-```powershell
-.\scripts\launch.ps1
-```
+## 호환성 매트릭스
 
-## 기본 동작이 안 되는 이유
+| 기능 | psmux v0.3.9 | psmux v0.4.10+ |
+|------|:---:|:---:|
+| `tmux -V` 버전 출력 | Shim 필요 | 네이티브 |
+| `display-message` 포맷 변수 | Shim 필요 | 네이티브 |
+| `send-keys -t %N` (bare pane ID) | Shim 필요 | 네이티브 |
+| `split-window -P -F #{pane_id}` | Shim 필요 | 네이티브 |
+| `kill-pane -t %N` | Shim 필요 | 네이티브 |
+| 팀원별 독립 pane | 미지원 | 미지원* |
 
-Claude Code와 psmux 사이에 여러 비호환성이 존재합니다. 전체 기술 설명은
-[docs/issues-and-improvements.md](docs/issues-and-improvements.md)를 참고하세요.
-요약하면:
-
-| 문제 | 증상 | 수정 |
-|------|------|------|
-| `tmux -V`가 psmux TUI 실행 | Claude Code 시작 시 행 | Shim이 `"tmux 3.4"` 반환 |
-| pane 내에서 포맷 변수가 빈 값 반환 | 팀원 스폰 실패 ("Could not determine pane count") | Shim이 올바른 값 반환 |
-| `send-keys -t %N`에 세션명 누락 | `no server running on session ''` 오류 | Shim이 `-t default:%N`으로 재작성 |
-| CMD batch의 `%*` 재확장 버그 | psmux가 `-t split-window` (잘못된 타겟)을 받아 TUI 충돌 | 위치 인자 `%~3` + `default:` 접두어 사용 |
-| 세션명이 반드시 `default`여야 함 | pane 내부에서 `psmux list-panes` 실패 | 항상 세션명을 `default`로 지정 |
+*\*Claude Code가 모든 팀원에게 1개 split만 생성합니다. psmux 한계가 아닌 Claude Code 동작 방식입니다.*
 
 ## 기여
 
-이슈와 PR을 환영합니다! psmux, Claude Code, 이 shim에 대한
-알려진 이슈 및 개선 제안의 전체 목록은
+이슈와 PR을 환영합니다! psmux, Claude Code, 이 프로젝트에 대한
+알려진 이슈 및 개선 제안은
 [docs/issues-and-improvements.md](docs/issues-and-improvements.md)를 참고하세요.
 
 ## 관련 이슈
 
 - [anthropics/claude-code#24384](https://github.com/anthropics/claude-code/issues/24384) — Windows Terminal을 분할 창 백엔드로 추가
-- [marlocarlo/psmux](https://github.com/marlocarlo/psmux) — psmux 프로젝트
+- [marlocarlo/psmux#42](https://github.com/marlocarlo/psmux/issues/42) — tmux 호환성 이슈 (v0.4.10에서 해결)
 
 ## 라이선스
 

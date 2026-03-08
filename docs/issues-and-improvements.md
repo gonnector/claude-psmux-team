@@ -1,71 +1,44 @@
 # Known Issues & Suggested Improvements
 
 This document tracks remaining issues found during testing and suggests
-improvements for psmux, Claude Code, and the shim itself.
+improvements for psmux, Claude Code, and this project.
 
 ---
 
-## For the psmux Project
+## Version History
+
+### psmux v0.4.10 (2025-03-08)
+
+Resolved all tmux command compatibility issues. A **minimal version-spoof shim**
+is still required because `tmux -V` returns `"tmux 0.4.10"` (Claude Code
+requires version 2+). The full 5-fix shim from v0.3.x is no longer needed.
+
+| Issue | v0.3.9 | v0.4.10 |
+|-------|--------|---------|
+| `tmux -V` launches TUI | Shim required | Fixed natively |
+| `display-message` format vars empty | Shim required | Fixed natively |
+| `send-keys -t %N` bare pane ID | Shim required | Fixed natively |
+| `split-window -P -F #{pane_id}` | Shim required | Fixed natively |
+| `kill-pane -t %N` | Shim required | Fixed natively |
+
+### psmux v0.3.9 (legacy)
+
+Required the bash/CMD compatibility shim for all tmux operations.
+See [shim-v0.3.x.md](shim-v0.3.x.md) for the shim's technical details.
+
+---
+
+## Remaining Issues
+
+### For psmux
 
 **Repo**: https://github.com/marlocarlo/psmux
+**Related issue**: https://github.com/marlocarlo/psmux/issues/42
 
-### 1. `tmux -V` should print version, not launch TUI
-
-**Severity**: Critical (blocks Claude Code)
-
-Real tmux outputs `tmux X.Y` to stdout and exits when called with `-V`.
-psmux launches its interactive TUI instead.
-
-**Suggested fix** (Rust pseudocode):
-```rust
-if args.contains("-V") || args.contains("--version") {
-    println!("psmux {}", env!("CARGO_PKG_VERSION"));
-    std::process::exit(0);
-}
-```
-
-### 2. `display-message` format variables return empty inside panes
-
-**Severity**: High (blocks teammate spawning)
-
-`tmux display-message -p '#{window_panes}'`, `'#{pane_id}'`, `'#{session_name}'`
-all return empty strings when called from a child process inside a psmux pane
-without an explicit `-t` target. Real tmux resolves these from the `$TMUX`
-environment variable.
-
-**Suggested fix**: When `$TMUX` is set, parse the socket path to determine
-the current session/window/pane context and use it as the default target.
-
-### 3. Session name hardcoded as `default` in socket path
-
-**Severity**: Medium
-
-The IPC socket path always contains `default` regardless of the actual session name.
-This causes `psmux list-panes` (without `-t`) from inside a pane to always look
-for the `default` session, failing if the session has any other name.
-
-**Suggested fix**: Embed the actual session name in `$TMUX_PANE` or use a
-separate env var (e.g., `PSMUX_SESSION`) that reflects the real session name.
-
-### 4. Pane ID not prefixed with session name in IPC commands
-
-**Severity**: High (blocks send-keys and kill-pane)
-
-When Claude Code calls `send-keys -t %2` or `kill-pane -t %2` from outside
-the psmux TUI process (i.e., from a child process inside the session), psmux
-cannot resolve the bare pane ID `%2` to its session. The command fails with
-`no server running on session ''`.
-
-Real tmux resolves pane IDs from the `$TMUX` environment variable context.
-
-**Suggested fix**: When looking up pane IDs, search all sessions if the session
-cannot be determined from the environment.
-
-**Workaround in shim**: Rewrite `-t %N` to `-t default:%N` (explicit session prefix).
-
-### 5. `send-keys` may contaminate typed text with terminal escape sequences
+#### 1. `send-keys` may contaminate typed text with terminal escape sequences
 
 **Severity**: Medium (intermittent agent spawn failures)
+**Status**: Needs verification on v0.4.10
 
 When psmux types a long command string into a pane via `send-keys`, terminal
 escape sequences from the terminal state (e.g., OSC title-set sequences `ESC]`)
@@ -77,50 +50,81 @@ Observed during: second or third teammate spawn into the same reused pane.
 **Suggested fix**: Strip or escape non-printable characters from the text
 argument before typing it into the pane.
 
+#### 2. Session name hardcoded as `default` in socket path
+
+**Severity**: Medium
+**Status**: Needs verification on v0.4.10
+
+The IPC socket path may still contain `default` regardless of the actual session
+name, preventing multi-session workflows.
+
+#### 3. `tmux -V` reports `"tmux 0.4.10"` — fails Claude Code version check
+
+**Severity**: High (blocks split-pane mode entirely)
+**Status**: Requires version-spoof shim
+
+psmux v0.4.10's `tmux.exe` returns `"tmux 0.4.10"` for `-V`. Claude Code
+parses the version number and requires 2.0+. When the check fails, Claude Code
+silently falls back to in-process (Agent) mode instead of split-pane (Teammate).
+
+**Workaround**: A compiled C shim (`scripts/tmux-shim.c`) intercepts `-V` and
+returns `"tmux 3.4"`, passing all other commands to `tmux-real.exe`.
+
+**Suggested fix for psmux**: Allow configuring the version string reported by
+`tmux -V`, or report a version >= 3.0 (e.g., `"tmux 3.4-psmux0.4.10"`).
+
+#### 4. `TMUX` environment variable not set inside psmux sessions
+
+**Severity**: Low (does not block functionality with `--teammate-mode tmux`)
+**Status**: Cosmetic
+
+Real tmux sets `TMUX` and `TMUX_PANE` environment variables inside sessions.
+psmux does not set these. Claude Code uses `process.env.TMUX` to detect if
+it's running inside a tmux session. Without it, Claude Code operates in
+"external session mode" — which still works, but the status line shows
+`View teammates: tmux -L ... a` instead of inline teammate indicators.
+
 ---
 
-## For Claude Code
+### For Claude Code
 
 **Repo**: https://github.com/anthropics/claude-code
 **Related issue**: https://github.com/anthropics/claude-code/issues/24384
 
-### 1. Add psmux as a supported split-pane backend
+#### 1. Add psmux as a supported split-pane backend
 
 Claude Code currently supports only `tmux` and `iTerm2` for split-pane mode.
 Since psmux provides a tmux-compatible interface on native Windows,
 it should be detected and supported directly.
 
-**Detection logic suggestion**:
-```javascript
-// Current
-if (process.env.TMUX) return 'tmux';
-
-// Suggested addition
-if (process.env.PSMUX_SESSION) return 'psmux'; // psmux-specific env var
-if (process.env.TMUX && process.env.TMUX.includes('psmux')) return 'psmux';
-```
-
-### 2. `tmux -V` should not block if version check fails
-
-If `tmux -V` times out or returns unexpected output, Claude Code should fall
-back gracefully to in-process mode rather than hanging.
-
-**Suggested fix**: Add a timeout (e.g. 2s) to the `tmux -V` call, and on
-failure/timeout, log a warning and continue with in-process mode.
-
-### 3. Windows Terminal / PowerShell as split-pane backend
+#### 2. Windows Terminal as split-pane backend
 
 **Issue**: https://github.com/anthropics/claude-code/issues/24384
 
 Windows Terminal exposes `wt.exe split-pane` CLI for programmatic pane splitting.
 Adding this as a backend would enable split-pane mode without any third-party tools.
 
-```powershell
-# Windows Terminal split-pane API
-wt.exe split-pane --horizontal -- pwsh -NoExit -Command "claude --agent-name ..."
-```
+#### 3. Node.js `spawn` only finds `.exe` on Windows — `.cmd`/bash shims ignored
 
-### 4. Team mode creates only 1 split pane for all teammates
+**Severity**: High (blocks split-pane mode entirely)
+
+Node.js `child_process.spawn('tmux', ...)` without `shell: true` uses
+Windows `CreateProcess` which only resolves `.exe` and `.com` extensions.
+Bash scripts (`tmux`) and CMD batch files (`tmux.cmd`) in PATH are invisible.
+
+**Impact**: A version-spoof shim must be a compiled `.exe`, not a script.
+The project provides `scripts/tmux-shim.c` for this purpose.
+
+#### 4. psmux argv[0] binary name detection
+
+psmux determines its operating mode from the executable name:
+- Name starts with `tmux` → tmux-compatible mode
+- Name contains `psmux` → psmux-native mode
+
+When renaming the binary for the shim setup, the real binary must be named
+`tmux-real.exe` (not `psmux-tmux.exe`), otherwise it enters the wrong mode.
+
+#### 5. Team mode creates only 1 split pane for all teammates
 
 **Severity**: Medium (visible behavior difference from macOS/tmux)
 
@@ -128,76 +132,37 @@ With `--teammate-mode tmux`, Claude Code calls `split-window` only **once**
 regardless of the number of teammates. All teammates share a single right-side
 pane and run sequentially (one completes, then the next starts).
 
-Observed behavior (3 teammates):
 ```
-┌──────────────────────────┬──────────────────────────┐
-│  Pane 1: Lead            │  Pane 2: teammates (×3)  │
-│  (orchestrating)         │  @alpha → @beta → @gamma │
-│                          │  (sequential, same pane) │
-└──────────────────────────┴──────────────────────────┘
+Observed (2 panes):                  Expected (4 panes):
+┌──────────┬──────────────┐          ┌──────┬──────┬──────┬──────┐
+│ Lead     │ teammates×3  │          │ Lead │ @a   │ @b   │ @c   │
+│          │ (sequential) │          │      │      │      │      │
+└──────────┴──────────────┘          └──────┴──────┴──────┴──────┘
 ```
-
-Expected behavior (matching macOS tmux):
-```
-┌──────────┬──────────┬──────────┬──────────┐
-│  Lead    │  @alpha  │  @beta   │  @gamma  │
-│  Pane 1  │  Pane 2  │  Pane 3  │  Pane 4  │
-└──────────┴──────────┴──────────┴──────────┘
-```
-
-**Suggested fix**: Call `split-window` once per teammate to give each teammate
-its own visible pane, enabling true parallel monitoring.
 
 ---
 
-## For This Shim
+## Shim Documentation
 
-### Fixed Issues (v1.0)
+### v0.4.10 — Version-spoof shim (`scripts/tmux-shim.c`)
 
-1. **`tmux -V` hang** — Shim intercepts `-V` and returns `"tmux 3.4"` immediately.
+A minimal C program (122KB compiled) that intercepts `tmux -V` to return
+`"tmux 3.4"` and delegates all other commands to `tmux-real.exe` via `_spawnvp`.
+Must be compiled as `.exe` because Node.js spawn only finds executables.
 
-2. **`display-message` format variables returning empty** — Shim intercepts
-   `window_panes`, `pane_id`, `session_name`, `window_id`, `window_index` and
-   returns correct values.
+### v0.3.x — Full compatibility shim (legacy)
 
-3. **`send-keys`/`kill-pane` failing with "no server running on session ''"** —
-   Shim rewrites `-t %N` to `-t default:%N` (explicit session prefix).
+The script shims (`scripts/tmux` and `scripts/tmux.cmd`) were created for
+psmux v0.3.9 compatibility and are preserved in the repo for reference.
+They fixed 5 issues that are now handled natively by psmux v0.4.10.
 
-4. **`split-window` TUI crash (`%*` re-expansion bug in CMD)** — `psmux %*` caused
-   CMD to re-expand `%1` (the pane ID literal) as the first batch argument
-   (`split-window`), giving psmux an invalid target `-t split-window`. Fixed by
-   extracting args positionally (`%~3`) and adding the `default:` prefix.
+See [shim-v0.3.x.md](shim-v0.3.x.md) for the full technical breakdown.
 
-5. **`split-window` stdout redirect bug** — Original handler redirected all output
-   (`>> log 2>&1`), preventing Claude Code from reading the new pane ID on stdout.
-   Fixed to redirect only stderr (`2>> log`).
+---
 
-### Known Limitations
+## Future Improvements
 
-1. **Session name must be `default`** — due to psmux Issue 3 above, the psmux
-   session must be named `default` for the shim to work correctly. A future
-   version should auto-detect the session name from `$TMUX`.
-
-2. **Only 2 panes total** — due to Claude Code Issue 4 above, all teammates share
-   a single split pane. Claude Code does not create one pane per teammate.
-
-3. **Intermittent model name corruption** — due to psmux Issue 5 above, the model
-   name argument may occasionally include a stray `]` character when a teammate
-   is spawned into a reused pane. Retry typically succeeds.
-
-4. **`tmux.cmd` format variable parsing** — the CMD batch file uses `findstr`
-   to detect format variables. Very unusual format strings might not be matched.
-   The bash shim has more robust parsing.
-
-5. **Tested on psmux v0.3.9** — compatibility with future psmux versions
-   is not guaranteed. Check the psmux changelog after upgrades.
-
-### Future Improvements
-
-- [ ] Auto-detect psmux session name from `$TMUX` socket path
-- [ ] Add `PSMUX_SESSION_NAME` env var support in launch script
+- [ ] Verify escape sequence contamination (psmux Issue 1) on v0.4.10
+- [ ] Verify session name handling (psmux Issue 2) on v0.4.10
 - [ ] Test with WezTerm on Windows as alternative backend
-- [ ] Create a proper Windows `.exe` shim using a small Rust or Go binary
-      to eliminate the bash/cmd dual-file requirement
-- [ ] Intercept `send-keys` to create a new split when the target pane is
-      occupied, enabling per-teammate panes until Claude Code Issue 4 is fixed
+- [ ] Create install script for psmux v0.4.10+ (simplified — just `cargo install`)
